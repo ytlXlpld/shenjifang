@@ -151,6 +151,22 @@
   .output-loading .dot:nth-child(2) { animation-delay: .2s; }
   .output-loading .dot:nth-child(3) { animation-delay: .4s; }
   @keyframes sj-blink { 0%, 80%, 100% { opacity: .25; } 40% { opacity: 1; } }
+  .hist-list { max-height: 340px; overflow-y: auto; margin-bottom: 6px; }
+  .hist-item {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    padding: 10px 14px; border: 1px solid var(--line); border-radius: 10px;
+    margin-bottom: 8px; cursor: pointer; transition: border-color .15s, background .15s;
+  }
+  .hist-item:hover { border-color: var(--accent); background: var(--accent-soft); }
+  .hist-title { font-size: 14px; font-weight: 700; }
+  .hist-meta { font-size: 12px; color: var(--ink-light); margin-top: 3px; }
+  .hist-del {
+    font-size: 12px; padding: 4px 10px; flex-shrink: 0;
+    border: 1px solid var(--line); border-radius: 12px;
+    background: #fff; color: var(--ink-light); cursor: pointer;
+  }
+  .hist-del:hover { border-color: #c0392b; color: #c0392b; }
+  .hist-empty { text-align: center; color: var(--ink-light); font-size: 13px; padding: 30px 0; }
 </style>
 </head>
 <body>
@@ -165,6 +181,7 @@
   </div>
   <div style="display:flex; align-items:center; gap:10px;">
     <span class="mode-badge" id="mode-badge">离线模式</span>
+    <button id="btn-history" style="padding:6px 14px;border:1px solid var(--line);border-radius:16px;background:#fff;cursor:pointer;font-size:13px;">🕘 历史</button>
     <button id="btn-settings" style="padding:6px 14px;border:1px solid var(--line);border-radius:16px;background:#fff;cursor:pointer;font-size:13px;">⚙ 设置</button>
   </div>
 </header>
@@ -236,6 +253,18 @@
     <div class="row">
       <button id="btn-dlg-cancel">取消</button>
       <button id="btn-dlg-save" class="primary">保存</button>
+    </div>
+  </div>
+</div>
+
+<div class="dialog-mask" id="hist-mask">
+  <div class="dialog" style="width:520px;">
+    <h3>🕘 历史记录</h3>
+    <p class="hint">自动保存最近 20 次生成结果，点击任意一条即可恢复到主界面（含表单信息）。</p>
+    <div id="hist-list" class="hist-list"></div>
+    <div class="row">
+      <button id="hist-clear">清空全部</button>
+      <button id="hist-close" class="primary">关闭</button>
     </div>
   </div>
 </div>
@@ -618,17 +647,33 @@
       (isAI ? "AI 正在动笔，约需 5–20 秒…" : "正在生成…") + "</div>";
   }
 
-  /* ---------------- 生成历史（刷新/重开自动恢复上次结果） ---------------- */
+  /* ---------------- 历史记录系统（最近 20 次，可查看/恢复/删除） ---------------- */
 
-  var HKEY = "sj_last";
-  function saveHistory(inp, list) {
-    try { localStorage.setItem(HKEY, JSON.stringify({ inputs: inp, list: list })); } catch (e) { }
+  var HKEY = "sj_history";
+  var TONE_NAMES = { zhongcao: "种草安利", ceping: "专业测评", guimi: "闺蜜分享", cuxiao: "促销吆喝" };
+
+  function loadHistory() {
+    try { return JSON.parse(localStorage.getItem(HKEY)) || []; } catch (e) { return []; }
   }
-  function restoreHistory() {
+  function saveHistoryList(arr) {
+    try { localStorage.setItem(HKEY, JSON.stringify(arr.slice(0, 20))); } catch (e) { }
+  }
+  function addHistory(inp, list) {
+    var arr = loadHistory();
+    arr.unshift({ t: Date.now(), inputs: inp, list: list });
+    saveHistoryList(arr);
+  }
+  function timeAgo(ts) {
+    var d = Date.now() - ts;
+    if (d < 60000) return "刚刚";
+    if (d < 3600000) return Math.floor(d / 60000) + " 分钟前";
+    if (d < 86400000) return Math.floor(d / 3600000) + " 小时前";
+    if (d < 604800000) return Math.floor(d / 86400000) + " 天前";
+    var t = new Date(ts);
+    return (t.getMonth() + 1) + "月" + t.getDate() + "日";
+  }
+  function applyHistory(h, tipText) {
     try {
-      var raw = localStorage.getItem(HKEY);
-      if (!raw) return;
-      var h = JSON.parse(raw);
       if (!h || !h.list || !h.list.length) return;
       if (h.inputs) {
         if (h.inputs.product) $("f-product").value = h.inputs.product;
@@ -639,9 +684,69 @@
       render(h.list);
       var tip = document.createElement("div");
       tip.className = "restore-tip";
-      tip.textContent = "📋 已恢复上次生成的内容，改改信息再点生成即可更新";
+      tip.textContent = "📋 已恢复" + tipText + "的内容，改改信息再点生成即可更新";
       $("output").insertBefore(tip, $("output").firstChild);
     } catch (e) { }
+  }
+  function restoreHistory() {
+    try {
+      var arr = loadHistory();
+      /* 兼容旧版：只有单条 sj_last 的老用户，先迁移进历史列表 */
+      if (!arr.length) {
+        var raw = localStorage.getItem("sj_last");
+        if (raw) {
+          var old = JSON.parse(raw);
+          if (old && old.list && old.list.length) {
+            arr = [{ t: Date.now(), inputs: old.inputs, list: old.list }];
+            saveHistoryList(arr);
+            localStorage.removeItem("sj_last");
+          }
+        }
+      }
+      if (arr.length) applyHistory(arr[0], "上次生成");
+    } catch (e) { }
+  }
+  function renderHistory() {
+    var arr = loadHistory();
+    var box = $("hist-list");
+    box.innerHTML = "";
+    if (!arr.length) {
+      box.innerHTML = '<div class="hist-empty">还没有历史记录，去生成一次就有了</div>';
+      $("hist-clear").style.display = "none";
+      return;
+    }
+    $("hist-clear").style.display = "";
+    arr.forEach(function (h, idx) {
+      var item = document.createElement("div");
+      item.className = "hist-item";
+      var main = document.createElement("div");
+      main.className = "hist-main";
+      var title = document.createElement("div");
+      title.className = "hist-title";
+      title.textContent = (h.inputs && h.inputs.product) || "未命名产品";
+      var meta = document.createElement("div");
+      meta.className = "hist-meta";
+      var toneName = (h.inputs && TONE_NAMES[h.inputs.tone]) || "自定义风格";
+      meta.textContent = toneName + " · " + h.list.length + " 版 · " + timeAgo(h.t);
+      var del = document.createElement("button");
+      del.className = "hist-del";
+      del.textContent = "删除";
+      del.addEventListener("click", function (e) {
+        e.stopPropagation();
+        arr.splice(idx, 1);
+        saveHistoryList(arr);
+        renderHistory();
+      });
+      main.appendChild(title);
+      main.appendChild(meta);
+      item.appendChild(main);
+      item.appendChild(del);
+      item.addEventListener("click", function () {
+        applyHistory(h, "历史记录");
+        $("hist-mask").classList.remove("open");
+      });
+      box.appendChild(item);
+    });
   }
 
   function showError(msg) {
@@ -675,7 +780,7 @@
     job.then(function (list) {
       if (!list.length) throw new Error("AI 返回的内容没能解析出来，再点一次试试");
       render(list);
-      saveHistory(inp, list);
+      addHistory(inp, list);
       $("mode-badge").textContent = apiKey ? ("AI · " + modelLabel(modelName)) : "离线模式";
     })
     .catch(function (e) { showError(e.message || "生成失败"); })
@@ -727,6 +832,30 @@
   });
   $("dlg-mask").addEventListener("click", function (e) {
     if (e.target === this) this.classList.remove("open");
+  });
+
+  /* 历史记录弹窗 */
+  var clearArmed = false;
+  $("btn-history").addEventListener("click", function () {
+    renderHistory();
+    $("hist-mask").classList.add("open");
+  });
+  $("hist-close").addEventListener("click", function () { $("hist-mask").classList.remove("open"); });
+  $("hist-mask").addEventListener("click", function (e) {
+    if (e.target === this) this.classList.remove("open");
+  });
+  $("hist-clear").addEventListener("click", function () {
+    if (!clearArmed) {
+      clearArmed = true;
+      this.textContent = "再点一次确认清空";
+      var b = this;
+      setTimeout(function () { clearArmed = false; b.textContent = "清空全部"; }, 2500);
+      return;
+    }
+    clearArmed = false;
+    this.textContent = "清空全部";
+    saveHistoryList([]);
+    renderHistory();
   });
 })();
 </script>
